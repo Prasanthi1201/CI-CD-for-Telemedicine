@@ -1,0 +1,100 @@
+name: Deployment CD
+
+on:
+  # push:
+  #   branches: ["main"]
+  # pull_request: 
+  #   branches: ["main"]
+  workflow_run:
+    workflows: [FrontendCI, BackendCI]
+    types: 
+      - completed
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.20.2]
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v1
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: SSH and deploy node app
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.DEPLOY_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        port: ${{ secrets.DEPLOY_PORT }}
+        script_stop: true
+        script: |
+          pwd
+          node --version
+          source ~/.nvm/nvm.sh 
+          node --version
+          cd /path/to/your/application
+          git stash 
+          git pull origin main --strategy=recursive -Xtheirs 
+          cd /path/to/your/backend
+          sudo rm -rf node_modules
+          sudo rm -rf package-lock.json
+          npm install
+          npm update
+          pm2 restart your-app-name
+          cd /path/to/your/frontend
+          touch test.txt #for testing pipeline
+          sudo rm -rf node_modules
+          sudo rm -rf package-lock.json
+          npm install --legacy-peer-deps
+          npm update --legacy-peer-deps
+          npm run build-linux-deobfuscated
+          cd /path/to/your/webserver
+          sudo find . ! -name 'index.nginx-debian.html' -type f -exec rm -f {} +
+          cd /path/to/your/home
+          sudo cp -r your-app/frontend/build/* /path/to/your/webserver/
+          sudo systemctl restart nginx
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Set up Chrome
+      uses: browser-actions/setup-chrome@v1
+      with:
+        chrome-version: beta
+      id: setup-chrome
+
+    - run: |
+        echo Installed Chromium version: ${{ steps.setup-chrome.outputs.chrome-version }}
+        ${{ steps.setup-chrome.outputs.chrome-path }} --version
+
+    - name: Build with Maven
+      run: mvn clean install
+      working-directory: testing/integration_testing
+
+    - name: Run Selenium Tests
+      run: |
+        mvn exec:java -Dexec.mainClass=integration_testing.i_t
+        if [ $? -eq 0 ]; then
+          echo "Selenium tests passed."
+          exit 0
+        else
+          echo "Selenium tests failed."
+          exit 1
+        fi
+      working-directory: testing/integration_testing
